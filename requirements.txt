@@ -1,0 +1,9 @@
+langchain_core
+langgraph
+confluent_kafka
+python-dotenv
+pymongo
+beautifulsoup4
+langchain_anthropic
+pydantic
+langchain_openai
