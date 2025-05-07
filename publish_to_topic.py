@@ -1,11 +1,15 @@
 from confluent_kafka import Producer
 import json
 from pathlib import Path
+import logging
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 # Get the path to the root directory
 root_dir = Path(__file__).resolve().parent.parent
 
-properties_file = root_dir / "client.properties"
+properties_file = "client.properties"
 
 def read_config():
   # reads the client configuration from client.properties
@@ -22,6 +26,9 @@ def read_config():
 def produce(topic, data):
   # creates a new producer instance
   producer = Producer(read_config())
+  
+  logger.info(topic)
+  logger.info(data)
 
   # print(json.dumps(data))
 

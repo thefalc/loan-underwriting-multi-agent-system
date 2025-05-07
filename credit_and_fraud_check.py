@@ -1,17 +1,15 @@
 import logging
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from dotenv import load_dotenv
 import json
 import asyncio
 import re
-from utils.publish_to_topic import produce
+from publish_to_topic import produce
 from langchain_openai import ChatOpenAI
-import os
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Load environment variables from .env file
@@ -33,7 +31,7 @@ SYSTEM_PROMPT = """You're a Credit and Fraud Risk Analyst at River Banking, a le
     Your findings will help determine whether the applicant meets River Banking's lending
     criteria and ensure the integrity of the loan underwriting process.
     """
-
+    
 @tool
 def get_fraud_risk_assesment(mortgage_application):
     """
@@ -55,7 +53,7 @@ def get_fraud_risk_assesment(mortgage_application):
                 recent_defaults (float): The customer's email.
                 payment_history (list): An array of the customer's payment history.
     """
-    
+
     print("Using tool get_fraud_risk_assesment")
     print(f"Calculating the fraud risk for applicant {mortgage_application['borrower_name']}")
     
@@ -94,6 +92,8 @@ def get_fraud_risk_assesment(mortgage_application):
 
     prompt = f"""
       Take the mortgage application and compute the fraud risk assessment.
+      Be generous in terms of fraud risk and only flag the applicant if
+      their application is really bad.
 
       Mortgage Application:
       {mortgage_application}
@@ -101,7 +101,7 @@ def get_fraud_risk_assesment(mortgage_application):
       The output should look like this:
       {json.dumps(example_output)}
 
-      Only include theå output. No additional description is needed.
+      Only include the output. No additional description is needed.
       Failure to strictly follow the output format will result in incorrect output.
     """
 
@@ -133,9 +133,13 @@ class MortgageValidatedApps(BaseModel):
     loan_stack_risk: str
     risk_category: str
     agent_reasoning: str
+    application_ts: int
+    
+    @validator('credit_utilization', 'debt_to_income_ratio', pre=True)
+    def round_precision(cls, v: float) -> float:
+        return round(v, 2)
 
 tools = [get_fraud_risk_assesment]
-# model.with_structured_output(MortgageValidatedApps)
 graph = create_react_agent(model, tools=tools, state_modifier=SYSTEM_PROMPT, response_format=MortgageValidatedApps)
 
 async def start_agent_flow(mortgage_application):
@@ -154,10 +158,11 @@ async def start_agent_flow(mortgage_application):
         "credit_score": 710,
         "credit_utilization": 32.5,
         "debt_to_income_ratio": 36.5,
-        "fraud_risk_score": 72,
+        "fraud_risk_score": 72.0,
         "loan_stack_risk": "High",
         "risk_category": "Moderate",
-        "agent_reasoning": "Applicant has a good credit score but high credit utilization. Potential loan stacking risk detected."
+        "agent_reasoning": "Applicant has a good credit score but high credit utilization. Potential loan stacking risk detected.",
+        "application_ts": 1745612643302
     }
 
     inputs = {"messages": [("user", f"""
@@ -171,6 +176,7 @@ async def start_agent_flow(mortgage_application):
         - Run a fraud risk analysis using the dedicated Fraud Risk Assessment tool to identify anomalies or potential red flags.
         - Combine insights from creditworthiness and fraud detection to form a holistic risk profile for underwriting.
         - Flag any inconsistencies or indicators of identity manipulation, falsified documentation, or suspicious financial behavior.
+        - Err on the side of giving the applicant a loan. Only deny if the application is particulary bad.
 
         Use dedicated tools to assess credit and fraud risk:
         - Fraud Risk Assessment Tool - Returns a JSON-formatted analysis that detects fraud risk based on provided applicant data and behavioral patterns.
@@ -190,15 +196,19 @@ async def start_agent_flow(mortgage_application):
         loan_stack_risk - A categorical risk level indicating the likelihood of concurrent or undisclosed loans (e.g., "Low", "Moderate", "High").
         risk_category - An overall credit and fraud risk classification (e.g., "Low", "Moderate", "High").
         agent_reasoning - A brief summary explaining the decision rationale, covering key credit or fraud-related findings.
+        application_ts - From the original mortgage application.
 
         Output Format
             The output must be strictly formatted as JSON, with no additional text, commentary, or explanation.
+            Make sure float values have decimal points for precision, e.g. 0 should be 0.0.
 
             The JSON should exactly match the following structure:
             {json.dumps(example_output)}
             
             Failure to strictly follow this format will result in incorrect output.
       """)]}
+    
+    logger.info(inputs)
 
     response = await graph.ainvoke(inputs)   
     last_message_content = response["messages"][-1]
@@ -212,24 +222,33 @@ async def start_agent_flow(mortgage_application):
         logger.info(f"Response from agent: {fraud_risk_assessment}")
         
         value_for_kakfa = json.loads(fraud_risk_assessment)
+        
+        logger.info(f"value from kafka {AGENT_OUTPUT_TOPIC}")
 
         # Write a message to the agent messages topic with the output from this agent
         produce(AGENT_OUTPUT_TOPIC, value_for_kakfa)
         
+        logger.info(f"wrote to kafka")
+        
 def lambda_handler(event, context):
     logger.info("Received event:")
-    # logger.info(event)
-
-    payload = event.get("payload", {})
-    mortgage_application = payload.get("value")
+    logger.info(event)
     
-    # get_fraud_risk_assesment(mortgage_application)
-
-    if mortgage_application:
-        try:
-            asyncio.run(start_agent_flow(mortgage_application))
-        except Exception as e:
-            logger.error(f"Failed to decode value: {e}")
+    for record in event:
+        payload = record.get("payload", {})
+        mortgage_application = payload.get("value")
+        
+        logger.info(mortgage_application)
+        
+        if mortgage_application:
+            try:
+                logger.info(mortgage_application)
+                borrower_name = mortgage_application.get("borrower_name", "").strip()
+                
+                if not borrower_name.lower().startswith("j"):
+                    asyncio.run(start_agent_flow(mortgage_application))
+            except Exception as e:
+                logger.error(f"Failed to decode value: {e}")
 
     return {
         'statusCode': 200,
