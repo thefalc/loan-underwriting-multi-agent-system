@@ -63,7 +63,7 @@ aws ecr create-repository --repository-name credit-check-lambda
 * Build the Docker image
 
 ```bash
-docker build --platform linux/amd64 --no-cache -t credit-check-lambda . 
+docker build --provenance=false --platform linux/amd64 --no-cache -t credit-check-lambda . 
 ```
 
 * Tag and push the image
