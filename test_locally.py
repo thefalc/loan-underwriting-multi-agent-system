@@ -1,5 +1,5 @@
 import base64
-from credit_and_fraud_check import lambda_handler  # Update with the actual file path
+from credit_and_fraud_check import lambda_handler 
 
 def test_locally():
     payload_value = {
@@ -133,7 +133,7 @@ def test_locally():
       }
     }
 
-    fake_event = {
+    fake_event = [{
         "payload": {
             "key": base64.b64encode(b"123").decode('utf-8'),
             "value": payload_value,
@@ -142,12 +142,12 @@ def test_locally():
             "partition": 5,
             "offset": 463
         }
-    }
+    }]
     
-    print(fake_event)
+    # print(fake_event)
 
-    # result = lambda_handler(fake_event, None)
-    # print(result)
+    result = lambda_handler(fake_event, None)
+    print(result)
 
 if __name__ == "__main__":
     test_locally()

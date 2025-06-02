@@ -1,13 +1,10 @@
 import logging
-from langchain_core.tools import tool
-from langgraph.prebuilt import create_react_agent
-from pydantic import BaseModel, validator
+import boto3
 from dotenv import load_dotenv
 import json
 import asyncio
 import re
 from publish_to_topic import produce
-from langchain_openai import ChatOpenAI
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -16,8 +13,7 @@ logger.setLevel(logging.INFO)
 load_dotenv()
 
 AGENT_OUTPUT_TOPIC = 'mortgage_validated_apps'
-
-model = ChatOpenAI(model="gpt-4o", temperature=0)
+MAX_REACT_LOOPS = 6
 
 SYSTEM_PROMPT = """You're a Credit and Fraud Risk Analyst at River Banking, a leading
     financial institution specializing in personalized mortgage solutions. River Banking
@@ -32,8 +28,138 @@ SYSTEM_PROMPT = """You're a Credit and Fraud Risk Analyst at River Banking, a le
     criteria and ensure the integrity of the loan underwriting process.
     """
     
-@tool
-def get_fraud_risk_assesment(mortgage_application):
+# definition of tools available
+tools = [
+    {
+        "toolSpec": {
+            "name": "get_fraud_risk_assesment",
+            "description": "Gets the applicant's fraud risk assessment.",
+            "inputSchema": {
+                "json": {
+                    "type": "object",
+                    "properties": {
+                        "mortgage_application": {
+                            "type": "object"
+                        }
+                    },
+                    "required": ["mortgage_application"]
+                }
+            }
+        }
+    }
+]
+
+def call_model(message_list, tool_list=[]):
+    session = boto3.Session()
+
+    bedrock = session.client(service_name='bedrock-runtime')
+    
+    request_params = {
+        "modelId": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        "messages": message_list,
+        "inferenceConfig": {
+            "maxTokens": 2000,
+            "temperature": 0
+        }
+    }
+    
+    if tool_list:  # Only add toolConfig if tool_list is not empty
+        request_params["toolConfig"] = { "tools": tool_list }
+    
+    response = bedrock.converse(**request_params)
+    
+    return response
+
+def take_action(tool_use_block):
+    tool_use_name = tool_use_block['name']
+            
+    print(f"Using tool {tool_use_name}")
+
+    if tool_use_name == 'get_fraud_risk_assesment':
+        print(tool_use_block['input'])
+        return get_fraud_risk_assesment(tool_use_block['input'])
+    else:
+        print(f"Invalid function name: {tool_use_name}")
+        
+def handle_response(response_message):
+    response_content_blocks = response_message['content']
+    follow_up_content_blocks = []
+    
+    for content_block in response_content_blocks:
+        if 'toolUse' in content_block:
+            tool_use_block = content_block['toolUse']
+            
+            print(tool_use_block)
+            
+            try:
+                tool_result_value = take_action(tool_use_block)
+                
+                if tool_result_value is not None:
+                    follow_up_content_blocks.append({
+                        "toolResult": {
+                            "toolUseId": tool_use_block['toolUseId'],
+                            "content": [
+                                { "json": { "result": tool_result_value } }
+                            ]
+                        }
+                    })
+                
+            except Exception as e:
+                follow_up_content_blocks.append({ 
+                    "toolResult": {
+                        "toolUseId": tool_use_block['toolUseId'],
+                        "content": [  { "text": repr(e) } ],
+                        "status": "error"
+                    }
+                })
+        
+    if len(follow_up_content_blocks) > 0:
+        follow_up_message = {
+            "role": "user",
+            "content": follow_up_content_blocks,
+        }
+        
+        return follow_up_message
+    else:
+        return None
+
+def think(prompt, tool_list):
+    loop_count = 0
+    should_continue = True
+    
+    message_list = [
+        {
+            "role": "user",
+            "content": [ { "text": prompt } ]
+        }
+    ]
+    
+    while should_continue:
+        response = call_model(message_list, tool_list)
+        
+        response_message = response['output']['message']
+        message_list.append(response_message)
+        
+        loop_count = loop_count + 1
+        
+        if loop_count >= MAX_REACT_LOOPS:
+            print(f"Hit loop limit: {loop_count}")
+            break
+        
+        follow_up_message = handle_response(response_message)
+        
+        print("follow up message")
+        print(follow_up_message)
+        
+        if follow_up_message is None:
+            # No remaining work to do, return final response to user
+            should_continue = False 
+        else:
+            message_list.append(follow_up_message)
+            
+    return message_list
+    
+def get_fraud_risk_assesment(mortgage_application: object):
     """
     Gets the applicants fraud risk assessment.
     
@@ -55,7 +181,6 @@ def get_fraud_risk_assesment(mortgage_application):
     """
 
     print("Using tool get_fraud_risk_assesment")
-    print(f"Calculating the fraud risk for applicant {mortgage_application['borrower_name']}")
     
     example_output = {
     "applicant_id": "C12345678",
@@ -105,42 +230,19 @@ def get_fraud_risk_assesment(mortgage_application):
       Failure to strictly follow the output format will result in incorrect output.
     """
 
-    data = model.invoke([{ "role": "user", "content": prompt }])
-    
-    print(data.content)
-    
-    return data
+    response = call_model([
+        {
+            "role": "user",
+            "content": [ { "text": prompt } ]
+        }
+    ])
 
-# Output definition for agent
-class MortgageValidatedApps(BaseModel):
-    """Validated mortgage application"""
-
-    application_id: str
-    applicant_id: str
-    customer_email: str
-    borrower_name: str
-    income: int
-    payslips: str
-    loan_amount: int
-    property_address: str
-    property_state: str
-    property_value: int
-    employment_status: str
-    credit_score: int
-    credit_utilization: float
-    debt_to_income_ratio: float
-    fraud_risk_score: int
-    loan_stack_risk: str
-    risk_category: str
-    agent_reasoning: str
-    application_ts: int
+    text_value = response['output']['message']['content'][0]['text']
     
-    @validator('credit_utilization', 'debt_to_income_ratio', pre=True)
-    def round_precision(cls, v: float) -> float:
-        return round(v, 2)
-
-tools = [get_fraud_risk_assesment]
-graph = create_react_agent(model, tools=tools, state_modifier=SYSTEM_PROMPT, response_format=MortgageValidatedApps)
+    print("tool response")
+    print(text_value)
+    
+    return text_value
 
 async def start_agent_flow(mortgage_application):
     example_output = {
@@ -165,7 +267,7 @@ async def start_agent_flow(mortgage_application):
         "application_ts": 1745612643302
     }
 
-    inputs = {"messages": [("user", f"""
+    prompt = f"""
         Using the applicant's financial profile and payment history, generate a Credit and Fraud Risk Assessment Report
         that evaluates the applicant's creditworthiness and flags any potential fraud indicators. This report will help
         River Banking make informed, responsible mortgage approval decisions that balance risk with opportunity.
@@ -206,47 +308,48 @@ async def start_agent_flow(mortgage_application):
             {json.dumps(example_output)}
             
             Failure to strictly follow this format will result in incorrect output.
-      """)]}
+      """
     
-    logger.info(inputs)
+    print("Prompt:")
+    print(prompt)
+    
+    messages = think(prompt, tools)
+    
+    print("Final output:")
+    print(messages[-1])
+    
+    content = messages[-1]['content'][0]['text']
 
-    response = await graph.ainvoke(inputs)   
-    last_message_content = response["messages"][-1]
-    content = last_message_content.pretty_repr()
-    
     json_match = re.search(r"\{.*\}", content, re.DOTALL)
 
     if json_match:
         fraud_risk_assessment = json_match.group()
 
-        logger.info(f"Response from agent: {fraud_risk_assessment}")
+        print(f"Response from agent: {fraud_risk_assessment}")
         
         value_for_kakfa = json.loads(fraud_risk_assessment)
         
-        logger.info(f"value from kafka {AGENT_OUTPUT_TOPIC}")
+        print(f"value for kafka {value_for_kakfa}")
 
         # Write a message to the agent messages topic with the output from this agent
         produce(AGENT_OUTPUT_TOPIC, value_for_kakfa)
         
-        logger.info(f"wrote to kafka")
+        print(f"wrote to kafka")
         
 def lambda_handler(event, context):
-    logger.info("Received event:")
-    logger.info(event)
+    print("Received event:")
+    print(event)
     
     for record in event:
+        print(record)
         payload = record.get("payload", {})
         mortgage_application = payload.get("value")
-        
-        logger.info(mortgage_application)
-        
+
         if mortgage_application:
             try:
-                logger.info(mortgage_application)
-                borrower_name = mortgage_application.get("borrower_name", "").strip()
+                print(mortgage_application)
                 
-                if not borrower_name.lower().startswith("j"):
-                    asyncio.run(start_agent_flow(mortgage_application))
+                asyncio.run(start_agent_flow(mortgage_application))
             except Exception as e:
                 logger.error(f"Failed to decode value: {e}")
 

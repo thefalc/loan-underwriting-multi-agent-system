@@ -30,8 +30,6 @@ def produce(topic, data):
   logger.info(topic)
   logger.info(data)
 
-  # print(json.dumps(data))
-
   # produces a sample message
   producer.produce(topic, value=json.dumps(data))
 

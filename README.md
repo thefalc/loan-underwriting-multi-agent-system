@@ -6,8 +6,7 @@ In order to set up and run the application, you need the following:
 
 * [Python 3.10](https://www.python.org/downloads/) or above
 * A [Confluent Cloud](https://www.confluent.io/) account
-* A [OpenAI](https://openai.com/api/) API key
-* A [LangChain](https://www.langchain.com/) API key
+* An AWS account with AWS Bedrock and Lambda access
 * [Docker](https://www.docker.com/) installed
 
 ## Getting set up
@@ -21,15 +20,7 @@ git clone https://github.com/thefalc/loan-underwriting-multi-agent-system.git
 
 ### Configuration settings
 
-Go into your root project direction and create a `.env` file with your OpenAI and LangChain API details.
-
-```bash
-LANGCHAIN_TRACING_V2='true'
-LANGCHAIN_API_KEY='REPLACE_ME'
-OPENAI_API_KEY='REPLACE_ME'
-```
-
-Next, following the [instructions](https://docs.confluent.io/cloud/current/client-apps/config-client.html) to create a new Python client. Once the client downloads, unzip it and find the `client.properties` file. Copy this file into the root directory.
+Follow the [instructions](https://docs.confluent.io/cloud/current/client-apps/config-client.html) to create a new Python client. Once the client downloads, unzip it and find the `client.properties` file. Copy this file into the root directory.
 
 ## Deploying the Lambda
 

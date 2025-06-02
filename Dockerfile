@@ -14,10 +14,7 @@ RUN pip install -r requirements.txt
 COPY credit_and_fraud_check.py ${LAMBDA_TASK_ROOT}
 COPY publish_to_topic.py ${LAMBDA_TASK_ROOT}
 COPY client.properties ${LAMBDA_TASK_ROOT}
-COPY .env ${LAMBDA_TASK_ROOT}
-
-# Copy the entire utils directory
-# COPY utils/ ${LAMBDA_TASK_ROOT}/utils/
+# COPY .env ${LAMBDA_TASK_ROOT}
 
 # Set the Lambda handler: <filename>.<function_name>
 CMD ["credit_and_fraud_check.lambda_handler"]
